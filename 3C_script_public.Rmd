@@ -3,7 +3,7 @@ title: "Encomran Analysis"
 author: "Axel Menning"
 date: "Last compiled on `r format(Sys.time(), '%d %B, %Y')`"
 output:
-  rmdformats::downcute
+  rmdformats::gihub_document
 
 ---
 
