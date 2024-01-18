@@ -1,0 +1,1110 @@
+---
+title: "Encomran Analysis"
+author: "Axel Menning"
+date: "Last compiled on `r format(Sys.time(), '%d %B, %Y')`"
+output: html_document
+
+---
+
+```{css, echo=FALSE}
+pre {
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+pre[class] {
+  max-height: 300px;
+}
+```
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Loading required packages
+```{r packages, message = FALSE, warning=FALSE}
+library(knitr)
+library(rstatix)
+library(readxl)
+library(tidyverse)
+library(reshape2)
+library(ggplot2)
+library(ggsignif)
+library(forcats)
+library(GGally)
+library(corrplot)
+library(paletteer)
+library(fmsb)
+library(factoextra)
+library(cluster)
+library(lsr)
+library(multcomp)
+library(stats)
+library(ggpubr)
+library(car)
+library(corrplot)
+library(Hmisc)
+library(likert)
+library(janitor)
+#library(openxlsx)
+
+
+```
+
+# Preparation of Raw Data
+Load qualtrics export
+
+```{r load xls}
+data_raw <- read_excel("C:/Users/axelm/Desktop/bfr/encomran/Final data text.xlsx")
+```
+
+Cleaning and labeling
+- Filter one participant (ID 2) with no contribution except answering BG1 = RM
+- Type Both gets only assigned when participants performed RA and RM for the LAST risk analysis
+
+```{r }
+data2 <- data_raw %>% 
+  slice(-1) %>% 
+  filter(!(`Intro and Consent`=="No, I do not consent"))%>%
+  filter(!(`BG1`=="I don´t know / I prefer not to say."))%>%
+  filter(is.na(BLG1)|!(`BLG1`=="I don´t know / I prefer not to say."))%>%
+  mutate(ID=row_number(), .before = `Intro and Consent`)%>%
+  filter(!(`ID` == "2"))%>%
+  mutate(Type=case_when(
+         `BG1` == "… only in risk assessment." ~ "RA",
+         `BG1` == "… only in risk management." ~ "RM",
+         `BLG1` == "… only provide the risk assessment, while the risk management was handled by someone else." ~ "RA",
+       `BLG1` == "… only provide the risk management, while the risk assessment was handled by someone else." ~ "RM",
+       `BLG1` == "… provide both risk assessment and risk management." ~ "Both"),.before = `Intro and Consent`)%>%
+  mutate(org_structure=case_when(
+         `BG2a` == "… only provides risk assessment." ~ "fully_separated",
+         `BG2a` == "… only provides risk management." ~ "fully_separated",
+         `BG2b` == "… by different persons working in different departments." ~ "different_department",
+       `BG2b` == "… by different persons within the same department." ~ "same_department",
+       `BG2b` == "… by the same person." ~ "same_person"),.before = `Intro and Consent`)%>%
+  mutate(did_both=case_when(
+         `BG1` == "… only in risk assessment." ~ "RA",
+         `BG1` == "… only in risk management." ~ "RM",
+         `BG1` == "… only in risk management." ~ "Both"),.before = `Intro and Consent`)%>%
+    mutate(sep_nosep=case_when(
+         `BG2a` == "… only provides risk assessment." ~ "sep",
+         `BG2a` == "… only provides risk management." ~ "sep",
+         `BG2b` == "… by different persons working in different departments." ~ "nosep",
+         `BG2b` == "… by different persons within the same department." ~ "nosep",
+         `BG2b` == "… by the same person." ~ "nosep"),.before = `Intro and Consent`)%>%
+    mutate(analysis_cat=case_when(
+         `RALG2` == "Routine risk assessment, i.e., a systematic review of all available scientific data to evaluate the magnitude of risks associated with certain hazards." ~ "routine risk analysis",
+         `RALG2` == "Expert opinion, i.e., a summary of evidence-based views given by experts in the field (often used when there is a lack of data)." ~ "expert opinion",
+         `RALG2` == "Rapid risk assessment, i.e., a risk assessment based on limited data due to time constraints (often used in initial stages of an event or after an incident of potential public health concern)." ~ "rapid risk analysis",
+         `RMLG2` == "Routine risk assessment, i.e., a systematic review of all available scientific data to evaluate the magnitude of risks associated with certain hazards." ~ "routine risk analysis",
+         `RMLG2` == "Expert opinion, i.e., a summary of evidence-based views given by experts in the field (often used when there is a lack of data)." ~ "expert opinion",
+         `RMLG2` == "Rapid risk assessment, i.e., a risk assessment based on limited data due to time constraints (often used in initial stages of an event or after an incident of potential public health concern)." ~ "rapid risk analysis"),.before = `Intro and Consent`)
+
+data2 %>% count(Type)
+data2 %>% count(org_structure)
+data2 %>% count(did_both)
+data2 %>% count(sep_nosep)
+
+#write.xlsx(data2, '')
+```
+
+Filter Type "Both" because they mainly interact with themselves ><.
+
+```{r }
+data <- data2 %>% filter(!(`Type` == "Both"))
+```
+
+
+# Preparation of potential outcome variables
+- Classes are: Experience, Satisfaction, perceived Quality of Risk Analysis (Quality) and perceived quality of Relationship between RA and RM (Relationship)
+- Sum of scores for Quality
+- Satisfaction and Relationship only exists for RA & RM
+- Relationship_1 is reversed because it is the only question phrased with negative polarity. 
+
+```{r ,warning=FALSE} 
+outcome2 <- data2 %>% 
+  dplyr::select(ID,
+                experience = BG4, 
+                satisfaction = c(RALR2_1, RMLR2_1),
+                work_process = c(RALR1_1, RMLR1_1, BLR2_1),
+                transparency = c(RALR1_2, RMLR1_2, BLR2_2),
+                effectiveness = c(RALR1_3, RMLR1_3, BLR2_3),
+                efficiency = c(RALR1_4, RMLR1_4, BLR2_4),
+                openness = c(RALR1_5, RMLR1_5, BLR2_5),
+                flexibility = c(RALR1_6, RMLR1_6, BLR2_6),
+                time_management = c(RALR1_7, RMLR1_7, BLR2_7),
+                timeliness = c(RALR1_8, RMLR1_8, BLR2_8),
+                familiarity = c(RALR4_1, RMLR4_1),
+                vulnerability_a = c(RALR4_2, RMLR4_2),
+                vulnerability_b = c(RALR4_3, RMLR4_3),
+                vulnerability_c = c(RALR4_4, RMLR4_4),
+                feeling_valued = c(RALR4_5, RMLR4_5),
+                ability = c(RALR4_6, RMLR4_6),
+                interest_alignment = c(RALR4_7, RMLR4_7)) %>%
+    mutate(satisfaction = coalesce(satisfaction1, satisfaction2))%>%
+  dplyr::select(-satisfaction1, -satisfaction2)%>%
+  mutate(satisfaction = gsub("[^0-9.-]", "", satisfaction))%>%
+  mutate(satisfaction = as.numeric(satisfaction))%>%
+    mutate(work_process = coalesce(work_process1, work_process2, work_process3))%>%
+  dplyr::select(-work_process1, -work_process2, -work_process3)%>%
+    mutate(transparency = coalesce(transparency1, transparency2, transparency3))%>%
+  dplyr::select(-transparency1, -transparency2, -transparency3)%>%
+    mutate(effectiveness = coalesce(effectiveness1, effectiveness2, effectiveness3))%>%
+  dplyr::select(-effectiveness1, -effectiveness2, -effectiveness3)%>%
+    mutate(efficiency = coalesce(efficiency1, efficiency2, efficiency3))%>%
+  dplyr::select(-efficiency1, -efficiency2, -efficiency3)%>%
+    mutate(openness = coalesce(openness1, openness2, openness3))%>%
+  dplyr::select(-openness1, -openness2, -openness3)%>%
+    mutate(flexibility = coalesce(flexibility1, flexibility2, flexibility3))%>%
+  dplyr::select(-flexibility1, -flexibility2, -flexibility3)%>%
+    mutate(time_management = coalesce(time_management1, time_management2, time_management3))%>%
+  dplyr::select(-time_management1, -time_management2, -time_management3)%>%
+    mutate(timeliness = coalesce(timeliness1, timeliness2, timeliness3))%>%
+  dplyr::select(-timeliness1, -timeliness2, -timeliness3)%>%
+  mutate(familiarity = coalesce(familiarity1, familiarity2))%>%
+  dplyr::select(-familiarity1, -familiarity2)%>%
+  mutate(vulnerability_a = coalesce(vulnerability_a1, vulnerability_a2))%>%
+  dplyr::select(-vulnerability_a1, -vulnerability_a2)%>%
+  mutate(vulnerability_b = coalesce(vulnerability_b1, vulnerability_b2))%>%
+  dplyr::select(-vulnerability_b1, -vulnerability_b2)%>%
+  mutate(vulnerability_c = coalesce(vulnerability_c1, vulnerability_c2))%>%
+  dplyr::select(-vulnerability_c1, -vulnerability_c2)%>%
+  mutate(feeling_valued = coalesce(feeling_valued1, feeling_valued2))%>%
+  dplyr::select(-feeling_valued1, -feeling_valued2)%>%
+  mutate(ability = coalesce(ability1, ability2))%>%
+  dplyr::select(-ability1, -ability2)%>%
+  mutate(interest_alignment = coalesce(interest_alignment1, interest_alignment2))%>%
+  dplyr::select(-interest_alignment1, -interest_alignment2)%>%
+  mutate(experience = as.numeric(experience)) %>%
+  mutate(experience = ifelse(experience > 60, NA, experience))%>%
+  mutate(across(everything(), ~ gsub("[^0-9.-]", "", .)))%>%
+  mutate_if(is.character,as.numeric)%>%
+  mutate(familiarity = 6 - familiarity)%>%
+  mutate(quality = rowMeans(across(work_process:timeliness), na.rm = TRUE))%>%
+  mutate(relationship = rowMeans(across(familiarity:interest_alignment), na.rm = TRUE))%>%
+  mutate(relationship = replace(relationship, relationship == 0, NA))%>%
+  mutate(across(work_process:timeliness, ~ factor(.,
+    levels=1:5,
+    labels=c('very poor','2','3','4','very good'))))%>%
+  mutate(across(familiarity:interest_alignment, ~ factor(.,
+    levels=1:5,
+    labels=c('do not agree at all','2','3','4','agree completely'))))%>%
+  mutate(satisfactionF = factor(satisfaction,
+    levels=1:5,
+    labels=c('Not at all satisfied','2','3','4','Very satisfied')))
+
+outcome2$Type <- data2$Type
+outcome2$org_structure <- data2$org_structure
+outcome2$did_both <- data2$did_both
+outcome2$sep_nosep <- data2$sep_nosep
+
+sum(complete.cases(outcome2$relationship))
+
+summary(outcome2$relationship)%>% round(1)
+
+prop.table(table(outcome2$interest_alignment))%>% `*`(100) %>% round(1)
+
+```
+```{r } 
+
+tapply(outcome2$experience, outcome2$Type, summary)
+```
+
+```{r } 
+outcome <- outcome2 %>% 
+  filter(!(`Type` == "Both"))
+#write.xlsx(outcome, 'G:/EnComRan/WP_1/Analysis/encomran_outcome.xlsx')
+```
+
+
+# 3C Scoring
+1. An empty data frame (Participants X CCC) is created
+2. +1`s are dimension-wise assigned, based on 3C rules (McNamara, 2012); text strings are used for a better traceability.
+3. sum of scores 
+```{r empty DF}
+scoring <- setNames(data.frame(matrix(ncol = 3, nrow = nrow(data))), c("cooperation", "coordination", "collaboration"))%>%
+  mutate(ID= data$ID, .before = `cooperation`)
+
+scoring$Type <- data$Type
+
+scoring[is.na(scoring)] <- 0
+```
+
+```{r scoring rules}
+design <- scoring %>%
+  mutate(cooperation = case_when(
+    data$BG2a == "… only provides risk assessment." | data$BG2a == "… only provides risk management." ~ 1, TRUE ~ 0))%>%
+  mutate(coordination = case_when(
+    data$BG3a == "Yes" ~ 1, TRUE ~ 0))%>%
+  mutate(collaboration = case_when(
+    data$BG2a == "… provides both risk assessment and risk management." ~ 1, TRUE ~ 0))%>%
+  mutate(cooperation = case_when(
+    coordination == 1 ~ 0, TRUE ~ cooperation))%>%
+    mutate(collaboration = case_when(
+    coordination == 1 ~ 0, TRUE ~ collaboration))%>%
+  mutate(dimension = "design")
+
+#we only keep 9a
+# but 9b,c,d,e can be further analyzed, for example to find contradictions.
+
+agreement <- scoring %>%
+  mutate(cooperation = case_when(
+     (data$RALE9a_1 == "Yes" & data$RALE9a_2 == "No") ~ 1,
+     (data$RMLE9a_1 == "Yes" & data$RMLE9a_2 == "No") ~ 1,
+     TRUE ~ 0))%>%
+  mutate(coordination = case_when(
+     (data$RALE9a_1 == "No" & data$RALE9a_2 == "Yes") ~ 1,
+     (data$RMLE9a_1 == "No" & data$RMLE9a_2 == "Yes") ~ 1,
+     TRUE ~ 0))%>%
+  mutate(collaboration = case_when(
+     (data$RALE9a_1 == "Yes" & data$RALE9a_2 == "Yes") ~ 1,
+     (data$RMLE9a_1 == "Yes" & data$RMLE9a_2 == "Yes") ~ 1,
+     TRUE ~ 0))%>%
+  mutate(dimension = "formality of agreement")
+
+#agreement <- agreement %>%
+  #mutate(cooperation = case_when(
+     #data$RALE9b == "The agreements were set by either risk assessment or risk management." ~ cooperation+1,
+     #data$RMLE9b == "The agreements were set by either risk assessment or risk management." ~ cooperation+1,
+     #TRUE ~ cooperation))%>%
+  #mutate(coordination = case_when(
+     #data$RALE9b == "The agreements were set by a coordinating entity." ~ coordination+1,
+     #data$RMLE9b == "The agreements were set by a coordinating entity." ~ coordination+1,
+     #TRUE ~ coordination))%>%
+  #mutate(collaboration = case_when(
+     #data$RALE9b == "The agreements were set jointly." ~ collaboration+1,
+     #data$RMLE9b == "The agreements were set jointly." ~ collaboration+1,
+     #TRUE ~ collaboration))%>%
+  #mutate(dimension = "formality of agreement")%>%
+  #mutate(across(2:4, ~ ./2))
+
+autonomy <- scoring %>%
+  mutate(cooperation = case_when(
+    data$RALG7 == "The risk assessment was performed fully autonomously." ~ 1, 
+    data$RMLG7 == "The risk management was performed fully autonomously." ~ 1, 
+    TRUE ~ 0))%>%
+  mutate(coordination = case_when(
+    data$RALG7 == "A coordinating entity from another organization coordinated the risk analysis process." | data$RALG7 == "A coordinating entity from my own organization coordinated the risk analysis process." ~ 1, 
+    data$RMLG7 == "A coordinating entity from another organization coordinated the risk analysis process." | data$RMLG7 == "A coordinating entity from my own organization coordinated the risk analysis process." ~ 1, 
+    TRUE ~ 0))%>%
+  mutate(collaboration = case_when(
+    data$RALG7 == "I worked jointly with risk management." ~ 1, 
+    data$RMLG7 == "I worked jointly with risk assessment." ~ 1, 
+    TRUE ~ 0))%>%
+  mutate(dimension = "organizational autonomy")
+
+personnel <- scoring %>%
+  mutate(cooperation = case_when(
+    data$RALG6 == "I interacted directly with risk management on a working level, supervisory staff was only involved during approval processes." ~ 1, 
+    data$RMLG6 == "I interacted directly with risk assessment on a working level, supervisory staff was only involved during approval processes." ~ 1, 
+    TRUE ~ 0))%>%
+  mutate(coordination = case_when(
+    data$RALG6 == "A coordinating entity facilitated my interaction with risk management." ~ 1, 
+    data$RMLG6 == "A coordinating entity facilitated my interaction with risk assessment." ~ 1, 
+    TRUE ~ 0))%>%
+  mutate(collaboration = case_when(
+    data$RALG6 == "Me, supervisory staff and potential colleagues interacted on equal footing with risk management." ~ 1, 
+    data$RMLG6 == "Me, supervisory staff and potential colleagues interacted on equal footing with risk assessment." ~ 1, 
+    TRUE ~ 0))%>%
+  mutate(dimension = "key personnel")
+
+info <- scoring %>%
+  mutate(cooperation = case_when(
+    (str_detect(data$RALE5, regex("We communicated only if needed", ignore_case = TRUE))) ~ 1, 
+    (str_detect(data$RMLE5, regex("We communicated only if needed", ignore_case = TRUE))) ~ 1, TRUE ~ 0))%>%
+  mutate(coordination=case_when(
+    (str_detect(data$RALE5, regex("We had formal proceedings", ignore_case = TRUE))) ~ 1,
+    (str_detect(data$RMLE5, regex("We had formal proceedings", ignore_case = TRUE))) ~ 1, TRUE ~ 0))%>%
+  mutate(collaboration=case_when(
+      (str_detect(data$RALE5, regex("We communicated openly and frequently.", ignore_case = TRUE))) ~ 1,
+    (str_detect(data$RMLE5, regex("We communicated openly and frequently.", ignore_case = TRUE))) ~ 1, TRUE ~ 0))%>%
+    mutate(cooperation = case_when(
+    (cooperation == 1 & coordination == 1) ~ 0, TRUE ~ cooperation))%>%
+    mutate(coordination = case_when(
+    (coordination == 1 & collaboration == 1) ~ 0, TRUE ~ coordination))%>%
+    mutate(cooperation = case_when(
+    (cooperation == 1 & collaboration == 1) ~ 0, TRUE ~ cooperation))%>%
+  mutate(dimension = "information sharing")
+
+decision <- scoring %>%
+  mutate(cooperation = case_when(
+    data$RALE1 == "Risk assessment alone." | data$RALE1 == "Risk management alone." ~ 1, 
+    data$RMLE1 == "Risk assessment alone." | data$RALE1 == "Risk management alone." ~ 1, 
+    TRUE ~ 0))%>%
+  mutate(coordination = case_when(
+    data$RALE1 == "A coordinating entity." ~ 1, 
+    data$RMLE1 == "A coordinating entity." ~ 1, 
+    TRUE ~ 0))%>%
+  mutate(collaboration = case_when(
+    data$RALE1 == "Risk assessment and risk management collectively." ~ 1, 
+    data$RMLE1 == "Risk assessment and risk management collectively." ~ 1, 
+    TRUE ~ 0))%>%
+  mutate(dimension = "decision making")
+
+turf <- scoring %>%
+  mutate(cooperation = case_when(
+    data$RALE2a == "No" | data$RALE2b == "We did not address the conflicts." ~ 1, 
+    data$RMLE2a == "No" | data$RMLE2b == "We did not address the conflicts." ~ 1, 
+    TRUE ~ 0))%>%
+  mutate(coordination = case_when(
+    (data$RALE2a == "Yes" & data$RALE2b == "We resolved the conflicts with help of a third party.") ~ 1, 
+    (data$RMLE2a == "Yes" & data$RMLE2b == "We resolved the conflicts with help of a third party.") ~ 1,
+    TRUE ~ 0))%>%
+  mutate(collaboration = case_when(
+    (data$RALE2a == "Yes" & data$RALE2b == "We resolved the conflicts in a team effort without the involvement of a third party.") ~ 1, 
+    (data$RMLE2a == "Yes" & data$RMLE2b == "We resolved the conflicts in a team effort without the involvement of a third party.") ~ 1, 
+    TRUE ~ 0))%>%
+  mutate(dimension = "turf issues")
+
+resource <- scoring %>%
+  mutate(cooperation = case_when(
+    data$RALG8a == "No" ~ 1,
+    data$RMLG8a == "No" ~ 1, 
+    TRUE ~ 0))%>%
+  mutate(coordination = case_when(
+    (data$RALG8a == "Yes" & data$RALG7 == "A coordinating entity from another organization coordinated the risk analysis process.") | 
+    (data$RALG8a == "Yes" & data$RALG7 == "A coordinating entity from my own organization coordinated the risk analysis process.") |
+    (data$RALG8a == "Yes" & data$RALG7 == "The risk management was performed fully autonomously.") 
+    ~ 1, 
+    (data$RMLG8a == "Yes" & data$RMLG7 == "A coordinating entity from another organization coordinated the risk analysis process.") | 
+    (data$RMLG8a == "Yes" & data$RMLG7 == "A coordinating entity from my own organization coordinated the risk analysis process.") | 
+    (data$RMLG8a == "Yes" & data$RMLG7 == "The risk management was performed fully autonomously.")
+    ~ 1, TRUE ~ 0))%>%
+  mutate(collaboration = case_when(
+    (data$RALG8a == "Yes" & data$RALG7 == "I worked jointly with risk management.") ~ 1, 
+    (data$RMLG8a == "Yes" & data$RMLG7 == "I worked jointly with risk assessment.") ~ 1, 
+    TRUE ~ 0))%>%
+  mutate(dimension = "resource allocation")
+
+trust <- scoring %>%
+  mutate(cooperation = case_when(
+    data$RALR5 == "It was not necessary that risk assessors and risk managers trusted each other." ~ 1, 
+    data$RMLR5 == "It was not necessary that risk assessors and risk managers trusted each other." ~ 1, 
+    TRUE ~ 0))%>%
+  mutate(coordination = case_when(
+    data$RALR5 == "Trust was only necessary between supervisory staff of risk assessment and risk management, not on a working level." ~ 1, 
+    data$RMLR5 == "Trust was only necessary between supervisory staff of risk assessment and risk management, not on a working level." ~ 1, 
+    TRUE ~ 0))%>%
+  mutate(collaboration = case_when(
+    data$RALR5 == "It was crucial that all partners trusted each other." ~ 1, 
+    data$RMLR5 == "It was crucial that all partners trusted each other." ~ 1, 
+    TRUE ~ 0))%>%
+  mutate(dimension = "trust")
+
+system <- scoring %>%
+  mutate(cooperation = case_when(
+    data$RALE8a == "No" ~ 1,
+    data$RMLE8a == "No" ~ 1, 
+    TRUE ~ 0))%>%
+  mutate(coordination = case_when(
+    (data$RALE8a == "Yes" & data$RALE8b == "They were only used if they facilitated the risk assessment.") ~ 1, 
+    (data$RMLE8a == "Yes" & data$RMLE8b == "They were only used if they facilitated the risk management.") ~ 1, 
+    TRUE ~ 0))%>%
+  mutate(collaboration = case_when(
+    (data$RALE8a == "Yes" & data$RALE8b == "They are used to facilitate the overall risk analysis process.") ~ 1, 
+    (data$RMLE8a == "Yes" & data$RMLE8b == "They are used to facilitate the overall risk analysis process.") ~ 1, 
+    TRUE ~ 0))%>%
+  mutate(dimension = "systems thinking")
+
+total <- rbind(design,agreement,autonomy,personnel,info,decision,turf,resource,trust,system)
+
+
+total_wide <- total %>%
+  mutate(ccc = case_when(
+    cooperation == 1 ~ 1,
+    coordination == 1 ~ 2,
+    collaboration == 1 ~ 3, 
+    TRUE ~ 0)) %>%
+  dplyr::select(-c("Type", "cooperation", "coordination", "collaboration"))%>%
+  pivot_wider(
+    id_cols = ID,
+    names_from = dimension, 
+    values_from = ccc)
+
+#write.xlsx(total_wide, '')
+```
+
+# 3C Descriptive results
+```{r }
+colSums(total[c("cooperation", "coordination", "collaboration")], na.rm = TRUE)
+```
+Plotting sums of Risk Analysis Type, Dimensions, Participants; absolute and relative
+
+```{r fig.width = 12}
+ccc <- total %>%
+  group_by(Type) %>%
+  summarise(across(c(cooperation, coordination, collaboration), sum, na.rm = TRUE))
+
+cccplot <- ccc %>%
+  pivot_longer(-Type, names_to = "Interaction") %>%
+  ggplot(aes(x = Type, y = value, fill = factor(Interaction, levels=c("collaboration","coordination","cooperation")))) +
+  scale_x_discrete(labels = c("Risk Assessment", "Risk Management"))+
+  geom_col(position="fill") + 
+  theme_classic()+
+  guides(fill=guide_legend(title="Interaction")) +
+  scale_fill_paletteer_d("wesanderson::Moonrise3")+
+  ggtitle("Risk Analysis Type")+ 
+  theme( 
+        text = element_text(size=20), 
+        plot.title = element_text(size = 20))
+
+dims <- total %>%
+  group_by(dimension) %>%
+  summarise(across(c(cooperation, coordination, collaboration), sum, na.rm = TRUE)) %>%
+  pivot_longer(-dimension, names_to = "Interaction")
+
+dimsplot <- ggplot(dims, aes(x = dimension, y = value, fill = factor(Interaction, levels=c("collaboration","coordination","cooperation")))) +
+  geom_col(position="fill") + 
+  guides(fill=guide_legend(title="Interaction")) +
+  theme_classic()+
+  theme(axis.text.x=element_text(angle=45,hjust=1), 
+        text = element_text(size=20), 
+        plot.title = element_text(size = 20)) +
+  scale_fill_paletteer_d("wesanderson::Moonrise3") +
+  ggtitle("3C Dimensions")+
+  xlab("Dimension")
+ggarrange(cccplot, dimsplot, ncol=2, nrow=1, common.legend = TRUE, legend="bottom")
+```
+
+# 3C Variance Analysis
+
+Check if Types (RA, RM, Both) differ in terms of their ccc score.
+```{r fig.width = 12}
+
+individual <- total %>%
+  group_by(ID) %>%
+  summarise(across(c(cooperation, coordination, collaboration), sum, na.rm = TRUE)) 
+
+corrdf <- cbind(individual, Type = scoring$Type)
+corrdf$Type <- as.factor(corrdf$Type)
+corrdf$ID <- NULL
+
+desired_order <- c("collaboration", "coordination", "cooperation")
+
+plot_difference <- corrdf %>% 
+  mutate(Type = factor(Type , levels=c("RA","RM"))) %>% 
+  pivot_longer(cols = -Type) %>% 
+  mutate(name = factor(name, levels = desired_order)) %>%
+  ggplot(aes(x = Type, y = value, fill = name)) + 
+  geom_boxplot() +
+  scale_x_discrete(labels = c("Risk Assessment", "Risk Management"))+
+  guides(fill = guide_legend(title = "Interaction"))+
+  ylab("Interaction score")+
+  scale_fill_paletteer_d("wesanderson::Moonrise3") +
+  labs(subtitle = "MANOVA, F(3,82) = 9.95")+
+  geom_signif(
+    annotation = "***",
+    textsize = 8,
+    y_position = 11, xmin = 0.75, xmax = 1.75,
+    tip_length = 0
+  )+
+  geom_signif(
+    annotation = "NS",
+    textsize = 5,
+    y_position = 12.2, xmin = 1, xmax = 2,
+    tip_length = 0
+  )+
+  geom_signif(
+    annotation = "***",
+    textsize = 8,
+    y_position = 13.4, xmin = 1.25, xmax = 2.25,
+    tip_length = 0
+  )+
+  theme_classic()+ 
+  theme(text = element_text(size=20), 
+        plot.title = element_text(size = 20))
+
+plot_difference
+
+model <- lm(cbind(cooperation, coordination, collaboration) ~ Type, data = corrdf)
+Manova(model, test.statistic = "Pillai")
+summary.aov(model)
+
+# check for normality
+par(mfrow = c(1, 2))
+hist(model$residuals)
+car::qqPlot(model$residuals,id = FALSE)
+shapiro.test(model$residuals)
+
+# check for homogenity; p > .05 indicates homogenity of error variance is true
+car::leveneTest(cooperation ~ Type, data = corrdf, as.na = TRUE)
+car::leveneTest(coordination ~ Type, data = corrdf, as.na = TRUE)
+car::leveneTest(collaboration ~ Type, data = corrdf, as.na = TRUE)
+```
+
+
+# differences in interaction for rapid risk analysis
+```{r }
+individual <- total %>%
+  group_by(ID) %>%
+  summarise(across(c(cooperation, coordination, collaboration), sum, na.rm = TRUE)) 
+
+corrdf <- cbind(individual, cat = data$analysis_cat)
+corrdf$cat <- as.factor(corrdf$cat)
+corrdf$ID <- NULL
+corrdf <- corrdf[!is.na(corrdf$cat), ]
+corrdf <- corrdf[!apply(corrdf == "expert opinion", 1, any), ]
+
+plot_difference <- corrdf %>% 
+  mutate(cat = factor(cat, levels=c("routine risk analysis","rapid risk analysis"))) %>% 
+  pivot_longer(cols = -cat) %>% 
+  ggplot(aes(x = cat, y = value, fill = name)) + 
+  geom_boxplot() +
+  scale_fill_paletteer_d("wesanderson::Moonrise3")+
+  ylab("interaction score")
+
+plot_difference
+
+model <- lm(cbind(cooperation, coordination, collaboration) ~ cat, data = corrdf)
+Manova(model, test.statistic = "Pillai")
+summary.aov(model)
+
+# check for normality
+par(mfrow = c(1, 2))
+hist(model$residuals)
+car::qqPlot(model$residuals,id = FALSE)
+shapiro.test(model$residuals)
+
+# check for homogenity; p > .05 indicates homogenity of error variance is true
+car::leveneTest(cooperation ~ cat, data = corrdf, as.na = TRUE)
+car::leveneTest(coordination ~ cat, data = corrdf, as.na = TRUE)
+car::leveneTest(collaboration ~ cat, data = corrdf, as.na = TRUE)
+```
+
+# K means clustering of 3C scores
+
+Cluster participants into groups based on 3c answers
+
+Find  optimal number of clusters
+
+```{r }
+km_df <- individual
+km_df$ID <- NULL
+
+fviz_nbclust(km_df, kmeans, method = "wss")
+
+#alternative methode
+#gap_stat <- clusGap(km_df,FUN = kmeans,nstart = 25,K.max = 10,B = 50)
+#fviz_gap_stat(gap_stat)
+
+```
+
+```{r }
+set.seed(1)
+km <- kmeans(km_df, centers = 7, iter.max = 800)
+km
+
+```
+
+```{r fig.width = 12}
+fviz_cluster(km, data = km_df)+
+  theme_classic()+ 
+  theme(text = element_text(size=20), 
+        plot.title = element_text(size = 20))
+
+```
+
+```{r }
+
+km_df_scaled <- scale(km_df)
+
+set.seed(12)
+kmeans_result <- kmeans(km_df_scaled, centers = 3)
+kmeans_result
+fviz_cluster(kmeans_result, data = km_df_scaled)+
+  theme_classic()+ 
+  theme(text = element_text(size=20), 
+        plot.title = element_text(size = 20))
+```
+
+Compare 3 cluster against quality
+```{r }
+
+outcome_ccccluster <- outcome %>%
+  cbind(data.frame(cluster = kmeans_result[["cluster"]]))%>%
+  relocate(cluster, .after = ID) %>%
+  mutate(cluster = factor(cluster, levels=c("1","2","3")))
+
+
+ggplot(outcome_ccccluster, aes(x = cluster, y = quality, fill = cluster)) + 
+  geom_boxplot()+
+  ylab("quality (mean)")
+
+kruskal.test(outcome_ccccluster$quality~outcome_ccccluster$cluster)
+```
+
+```{r }
+
+outcome_ccccluster <- outcome %>%
+  cbind(data.frame(cluster = km[["cluster"]]))%>%
+  relocate(cluster, .after = ID) %>%
+  mutate(cluster = factor(cluster, levels=as.character(1:7)))
+```
+
+7 cluster ~ experience & satisfaction
+
+```{r }
+plot_exp <- ggplot(outcome_ccccluster, aes(x = cluster, y = experience, fill = cluster)) + 
+  geom_boxplot() +
+  ylab("years of experience")
+
+plot_satis <- ggplot(data=subset(outcome_ccccluster, !is.na(satisfactionF)), aes(x = cluster)) + 
+  geom_bar(aes(fill=satisfactionF), position="fill")+
+  ylab("satisfaction")
+
+plot_o3 <- ggarrange(plot_exp, plot_satis, ncol=2, nrow=1, common.legend = FALSE)
+
+annotate_figure(plot_o3, top = text_grob("3C Cluster ~ Experience & Satisfaction", size = 12))
+
+#Tests
+aov_exp_c <- aov(experience ~ cluster, data = outcome_ccccluster)
+summary(aov_exp_c)
+
+kruskal.test(outcome_ccccluster$satisfaction~outcome_ccccluster$cluster)
+```
+
+7 cluster ~ perceived quality
+```{r }
+
+ggplot(outcome_ccccluster, aes(x = cluster, y = quality, fill = cluster)) + 
+  geom_boxplot()+
+  ylab("quality (mean)")
+
+plot_q1 <- ggplot(data=subset(outcome_ccccluster, !is.na(work_process)), aes(x = cluster))+ 
+  geom_bar(aes(fill = work_process), position="fill")+
+  ylab("work_process")+
+  theme(legend.title = element_text(size = 0))
+
+plot_q2 <- ggplot(data=subset(outcome_ccccluster, !is.na(transparency)), aes(x = cluster)) + 
+  geom_bar(aes(fill = transparency), position="fill")+
+  ylab("transparency")
+
+plot_q3 <- ggplot(data=subset(outcome_ccccluster, !is.na(effectiveness)), aes(x = cluster)) + 
+  geom_bar(aes(fill = effectiveness), position="fill")+
+  ylab("effectiveness")
+
+plot_q4 <- ggplot(data=subset(outcome_ccccluster, !is.na(efficiency)), aes(x = cluster)) + 
+  geom_bar(aes(fill = efficiency), position="fill")+
+  ylab("efficiency")
+
+plot_q5 <- ggplot(data=subset(outcome_ccccluster, !is.na(openness)), aes(x = cluster)) + 
+  geom_bar(aes(fill = openness), position="fill")+
+  ylab("openness")
+
+plot_q6 <- ggplot(data=subset(outcome_ccccluster, !is.na(flexibility)), aes(x = cluster)) + 
+  geom_bar(aes(fill = flexibility), position="fill")+
+  ylab("flexibility")
+
+plot_q7 <- ggplot(data=subset(outcome_ccccluster, !is.na(time_management)), aes(x = cluster)) + 
+  geom_bar(aes(fill = time_management), position="fill")+
+  ylab("time_management")
+
+plot_q8 <- ggplot(data=subset(outcome_ccccluster, !is.na(timeliness)), aes(x = cluster)) + 
+  geom_bar(aes(fill = timeliness), position="fill")+
+  ylab("timeliness")
+
+plot_o4 <- ggarrange(plot_q1,plot_q2,plot_q3,plot_q4,plot_q5,plot_q6,plot_q7,plot_q8, ncol=4, nrow=2, common.legend = TRUE)
+
+annotate_figure(plot_o4, top = text_grob("3C Cluster ~ Quality Dimensions", size = 12))
+
+#Kruskall-Wallis test
+cols <- names(outcome_ccccluster)[5:12]
+KWTcluster <- lapply(cols, function(x)
+  kruskal.test(reformulate("cluster", x), data = outcome_ccccluster))
+
+KWTcluster <- lapply(KWTcluster, "[", c("data.name", "p.value"))
+
+kable(t(as.data.frame(KWTcluster)))
+```
+
+# 3C cluster - relationship
+```{r }
+
+ggplot(outcome_ccccluster, aes(x = cluster, y = relationship, fill = cluster)) + 
+  geom_boxplot()+
+  ylab("relationship (mean)")
+
+plot_r1 <- ggplot(data=subset(outcome_ccccluster, !is.na(familiarity)), aes(x = cluster)) + 
+  geom_bar(aes(fill = familiarity), position="fill")+
+  ylab("familiarity")+
+  theme(legend.title = element_text(size = 0))
+
+plot_r2 <- ggplot(data=subset(outcome_ccccluster, !is.na(vulnerability_a)), aes(x = cluster)) + 
+  geom_bar(aes(fill = vulnerability_a), position="fill")+
+  ylab("vulnerability_a")
+
+plot_r3 <- ggplot(data=subset(outcome_ccccluster, !is.na(vulnerability_b)), aes(x = cluster)) + 
+  geom_bar(aes(fill = vulnerability_b), position="fill")+
+  ylab("vulnerability_b")
+
+plot_r4 <- ggplot(data=subset(outcome_ccccluster, !is.na(vulnerability_c)), aes(x = cluster)) + 
+  geom_bar(aes(fill = vulnerability_c), position="fill")+
+  ylab("vulnerability_c")
+
+plot_r5 <- ggplot(data=subset(outcome_ccccluster, !is.na(feeling_valued)), aes(x = cluster)) + 
+  geom_bar(aes(fill = feeling_valued), position="fill")+
+  ylab("feeling_valued")
+
+plot_r6 <- ggplot(data=subset(outcome_ccccluster, !is.na(ability)), aes(x = cluster)) + 
+  geom_bar(aes(fill = ability), position="fill")+
+  ylab("ability")
+
+plot_r7 <- ggplot(data=subset(outcome_ccccluster, !is.na(interest_alignment)), aes(x = cluster)) + 
+  geom_bar(aes(fill = interest_alignment), position="fill")+
+  ylab("interest_alignment")
+
+plot_qual_all <- ggarrange(plot_r1,plot_r2,plot_r3,plot_r4,plot_r5,plot_r6,plot_r7, ncol=4, nrow=2, common.legend = TRUE)
+
+annotate_figure(plot_qual_all, top = text_grob("3C Cluster ~ Relationship Dimensions", size = 12))
+
+
+#Kruskall-Wallis test
+cols <- names(outcome_ccccluster)[13:19]
+KWTcluster <- lapply(cols, function(x)
+  kruskal.test(reformulate("cluster", x), data = outcome_ccccluster))
+
+KWTcluster <- lapply(KWTcluster, "[", c("data.name", "p.value"))
+
+kable(t(as.data.frame(KWTcluster)))
+```
+
+# Type ~ Experience & Satisfaction
+"How satisfied were you overall with the communication between you and the risk manager/risk assessment during the last risk analysis?"
+```{r }
+exp_type_plot <- ggplot(outcome2, aes(x = Type, y = experience)) + 
+  geom_boxplot()+
+  ylab("years of experience")
+
+satis_type_plot <-  ggplot(data=subset(outcome, !is.na(satisfactionF)), aes(x = Type)) + 
+  geom_bar(aes(fill=satisfactionF), position="fill")+
+  ylab("satisfaction")
+
+plot_o1 <- ggarrange(exp_type_plot, satis_type_plot, ncol=2, nrow=1, common.legend = FALSE)
+
+annotate_figure(plot_o1, top = text_grob("Type ~ Experience & Satisfaction", size = 12))
+
+# Tests 
+aov_exp <- aov(experience ~ Type, data = outcome)
+summary(aov_exp)
+
+kruskal.test(outcome_ccccluster$satisfaction~outcome_ccccluster$Type)
+```
+
+
+# Quality ~ Type
+```{r }
+
+ggplot(outcome, aes(x = Type, y = quality, fill = Type)) + 
+  geom_boxplot()+
+  ylab("quality (mean)")
+
+plot_q1 <- ggplot(data=subset(outcome, !is.na(work_process)), aes(x = Type)) + 
+  geom_bar(aes(fill = work_process), position="fill")+
+  ylab("work_process")+
+  theme(legend.title = element_text(size = 0))
+
+plot_q2 <- ggplot(data=subset(outcome, !is.na(transparency)), aes(x = Type)) + 
+  geom_bar(aes(fill = transparency), position="fill")+
+  ylab("transparency")
+
+plot_q3 <- ggplot(data=subset(outcome, !is.na(effectiveness)), aes(x = Type)) + 
+  geom_bar(aes(fill = effectiveness), position="fill")+
+  ylab("effectiveness")
+
+plot_q4 <- ggplot(data=subset(outcome, !is.na(efficiency)), aes(x = Type)) + 
+  geom_bar(aes(fill = efficiency), position="fill")+
+  ylab("efficiency")
+
+plot_q5 <- ggplot(data=subset(outcome, !is.na(openness)), aes(x = Type)) + 
+  geom_bar(aes(fill = openness), position="fill")+
+  ylab("openness")
+
+plot_q6 <- ggplot(data=subset(outcome, !is.na(flexibility)), aes(x = Type)) + 
+  geom_bar(aes(fill = flexibility), position="fill")+
+  ylab("flexibility")
+
+plot_q7 <- ggplot(data=subset(outcome, !is.na(time_management)), aes(x = Type)) + 
+  geom_bar(aes(fill = time_management), position="fill")+
+  ylab("time_management")
+
+plot_q8 <- ggplot(data=subset(outcome, !is.na(timeliness)), aes(x = Type)) + 
+  geom_bar(aes(fill = timeliness), position="fill")+
+  ylab("timeliness")
+
+plot_o2 <- ggarrange(plot_q1,plot_q2,plot_q3,plot_q4,plot_q5,plot_q6,plot_q7,plot_q8, ncol=4, nrow=2, common.legend = TRUE)
+
+annotate_figure(plot_o2, top = text_grob("Type ~ Quality Dimensions", size = 12))
+
+
+#Kruskall-Wallis test
+KWTtype <- lapply(cols, function(x)
+  kruskal.test(reformulate("Type", x), data = outcome_ccccluster))
+
+KWTtype <- lapply(KWTtype, "[", c("data.name", "p.value"))
+
+kable(t(as.data.frame(KWTtype)))
+```
+
+# Type - relationship
+```{r }
+
+ggplot(outcome, aes(x = Type, y = relationship, fill = Type)) + 
+  geom_boxplot()+
+  ylab("relationship (mean)")
+
+plot_r1 <- ggplot(data=subset(outcome, !is.na(familiarity)), aes(x = Type)) + 
+  geom_bar(aes(fill = familiarity), position="fill")+
+  ylab("familiarity")+
+  theme(legend.title = element_text(size = 0))
+
+plot_r2 <- ggplot(data=subset(outcome, !is.na(vulnerability_a)), aes(x = Type)) + 
+  geom_bar(aes(fill = vulnerability_a), position="fill")+
+  ylab("vulnerability_a")
+
+plot_r3 <- ggplot(data=subset(outcome, !is.na(vulnerability_b)), aes(x = Type)) + 
+  geom_bar(aes(fill = vulnerability_b), position="fill")+
+  ylab("vulnerability_b")
+
+plot_r4 <- ggplot(data=subset(outcome, !is.na(vulnerability_c)), aes(x = Type)) + 
+  geom_bar(aes(fill = vulnerability_c), position="fill")+
+  ylab("vulnerability_c")
+
+plot_r5 <- ggplot(data=subset(outcome, !is.na(feeling_valued)), aes(x = Type)) + 
+  geom_bar(aes(fill = feeling_valued), position="fill")+
+  ylab("feeling_valued")
+
+plot_r6 <- ggplot(data=subset(outcome, !is.na(ability)), aes(x = Type)) + 
+  geom_bar(aes(fill = ability), position="fill")+
+  ylab("ability")
+
+plot_r7 <- ggplot(data=subset(outcome, !is.na(interest_alignment)), aes(x = Type)) + 
+  geom_bar(aes(fill = interest_alignment), position="fill")+
+  ylab("interest_alignment")
+
+plot_qual_all <- ggarrange(plot_r1,plot_r2,plot_r3,plot_r4,plot_r5,plot_r6,plot_r7, ncol=4, nrow=2, common.legend = TRUE)
+
+annotate_figure(plot_qual_all, top = text_grob("Type ~ Relationship Dimensions", size = 12))
+
+
+#Kruskall-Wallis test
+KWTtype <- lapply(cols, function(x)
+  kruskal.test(reformulate("Type", x), data = outcome_ccccluster))
+
+KWTtype <- lapply(KWTtype, "[", c("data.name", "p.value"))
+
+kable(t(as.data.frame(KWTtype)))
+```
+
+
+# Frequency of communication (from 0 to 100)
+
+```{r }
+freq_com <- data %>% 
+  dplyr::select(freq = c(RALE3a_1, RMLE3a_1), Type)%>%
+  mutate(freq = coalesce(freq1, freq2))%>%
+  dplyr::select(-freq1, -freq2)%>%
+  mutate(freq = as.numeric(freq))
+
+sum(complete.cases(data$RALE3a_1))
+sum(complete.cases(data$RMLE3a_1))
+summary(as.numeric(data$RALE3a_1))
+summary(as.numeric(data$RMLE3a_1))
+
+kable(cor(outcome[c(2,3,19,20)], freq_com$freq, use = "complete.obs"), col.names = c("Pearson’s r"))
+
+ggboxplot(freq_com, x = "Type", y = "freq", add = "jitter", fill = "Type")+
+  ylab("Frequency of communication") +
+  scale_fill_paletteer_d("wesanderson::GrandBudapest2")+
+  theme(text = element_text(size=20))+ 
+  theme(legend.position="none")
+
+t.test(freq_com$freq~freq_com$Type, var.equal = TRUE, alternative = "two.sided")
+```
+
+Reasons for Risk Assessment for Non-communication
+Multiple choice; further analysis of open questions needed. 
+
+```{r }
+#"Why did you rarely communicate with risk management while working on the last risk analysis? 
+
+sum(complete.cases(data$RALE3b))
+
+non_com <- data %>%
+  dplyr::select(RALE3b)%>%
+  separate_rows(RALE3b, sep = ",")
+
+non_com <- as.data.frame(table(non_com$RALE3b))
+
+non_com <- non_com %>% arrange(desc(Freq))
+
+non_com$Percent=round(non_com$Freq/sum(non_com$Freq)*100, digits = 2)
+
+kable(non_com, col.names = c("Reasons", "Frequency", "%"))
+
+```
+
+```{r }
+#Why did you rarely communicate with risk assessment while working on the last risk analysis?
+sum(complete.cases(data$RMLE3b))
+
+non_com <- data %>%
+  dplyr::select(RMLE3b)%>%
+  separate_rows(RMLE3b, sep = ",")
+
+non_com <- as.data.frame(table(non_com$RMLE3b))
+
+non_com <- non_com %>% arrange(desc(Freq))
+
+non_com$Percent=round(non_com$Freq/sum(non_com$Freq)*100, digits = 2)
+
+kable(non_com, col.names = c("Reasons", "Frequency", "%"))
+```
+
+Reasons for Risk Management for Communication
+Multiple choice; further analysis of open questions needed. 
+```{r }
+#"When you did communicate with risk assessment while working on the last risk analysis, what were the reasons?" 
+
+sum(complete.cases(data$RALE3c))
+
+com <- data %>%
+  dplyr::select(RALE3c)%>%
+  separate_rows(RALE3c, sep = ",")
+
+com <- as.data.frame(table(com$RALE3c))
+
+com <- com %>% arrange(desc(Freq))
+
+com$Percent=round(com$Freq/sum(com$Freq)*100, digits = 2)
+
+kable(com, col.names = c("Reasons", "Frequency", "%"))
+```
+
+# Feedback on Risk Analysis
+descriptive results + correlation with set of outcome variables
+```{r }
+feedback <- data %>% 
+  dplyr::select(ID, Type, Y_N = c(RALR6a,RMLP4a), usefulness = c(RALR6b_1,RMLP4b_1), desired_feedback = RALR7)%>%
+  mutate(Y_N = coalesce(Y_N1, Y_N2))%>%
+  dplyr::select(-Y_N1, -Y_N2)%>%
+  mutate(usefulness = coalesce(usefulness1, usefulness2))%>%
+  dplyr::select(-usefulness1, -usefulness2)%>%
+  mutate(usefulness = gsub("[^0-9.-]", "", usefulness))
+
+#RA: Did you receive any feedback on your last risk assessment from risk management? 
+#RM: Did you receive any feedback on the comprehensibility or any ambiguities of your last risk assessment mandate from risk assessment? 
+kable(table(feedback$Type, feedback$Y_N))
+
+#RA: How useful was the feedback for preparation of future risk assessments?
+#RM: How useful was the feedback for preparation of future risk assessment mandates?
+feedback$usefulness <- factor(feedback$usefulness,
+    levels=1:5,
+    labels=c('Not at all helpful','2','3','4','Very helpful'))
+  
+usefulness <- feedback%>%
+  dplyr::select(Type, usefulness)%>%
+  gather(key='Type', value='usefulness')%>%
+  na.omit(usefulness)
+  
+ggplot(usefulness, aes(x=Type)) +
+  geom_bar(aes(fill=usefulness), position="fill") +
+  labs(
+    title='Feedback',
+    x='Type', y='count'
+  ) +
+  theme_classic()+ 
+          scale_fill_discrete(drop=FALSE) +
+          scale_x_discrete(drop=FALSE)
+
+# correlation of outcome with rated usefulness of feedback
+kable(cor(outcome[c(2,3,19,20)], as.numeric(feedback$usefulness), use = "complete.obs"), col.names = c("Pearson’s r"))
+
+feedback_sep <- feedback%>%
+  separate_rows(desired_feedback, sep = ",")%>%
+  na.omit(desired_feedback)
+  
+ggplot(feedback_sep, aes(x = reorder(desired_feedback,desired_feedback,
+                     function(x)-length(x))))+
+  geom_bar()+ 
+  coord_flip()+
+  labs(
+    title='Desired Feedback',
+    x='items (RA only)', y='count'
+  ) +
+  theme(axis.text = element_text(size = 10))
+```
+
+```{r }
+
+all <- data2 %>% 
+  dplyr::select(ID, Type, challenges = c(CI1_1:CI1_5))%>%
+  mutate(across(challenges1:challenges5, ~ ordered(.,
+      levels = c("Never", "Rarely", "Sometimes", "Often", "Always"))))%>%
+  pivot_longer(challenges1:challenges5)%>%
+  na.omit(value)
+  
+ggplot(all, aes(x=name)) +
+  geom_bar(aes(fill=value), position = "fill")+
+  labs(
+    title='Challenges',
+    x='Challenge', y='count'
+  ) + 
+  coord_flip()+
+  theme(axis.text.y = element_text(size = 12))+ 
+          scale_fill_discrete(drop=FALSE) +
+          scale_x_discrete(labels=c("I didn’t know who to approach", "I didn’t know how to find \nthe right person", "If I was absent, there was no one \nwho could answer questions \nabout my work.", "There was not enough time \nto resolve disagreements.", "Procedural constraints \nhindered open communication."))
+
+```
+
+```{r }
+# subject area RALG1 / RMLG1
+
+sum(complete.cases(data$RALG1))
+
+com <- data %>%
+  dplyr::select(RALG1)%>%
+  separate_rows(RALG1, sep = ",")
+
+subj <- as.data.frame(table(trimws(com$RALG1)))
+subj$Percent=round(subj$Freq/sum(subj$Freq)*100, digits = 2)
+
+kable(subj, col.names = c("Subject Area", "Frequency", "%"))
+
+
+```
+
+Correlations
+```{r }
+
+length <- data %>% 
+  dplyr::select(length = c(RALG3, RMLG3))%>%
+  mutate(length = coalesce(length1, length2))%>%
+  dplyr::select(-length1, -length2)%>%
+  mutate(length = factor(length,
+    levels=c('Less than a month.','One to three months.','Four to six months.','Seven to twelve months.','More than a year.')))
+
+
+kable(cor(outcome[c(3,19,20)], as.numeric(length$length), method = "spearman", use = "complete.obs"), col.names = c("Spearman’s r"))
+
+cor.test(as.numeric(length$length),outcome$relationship, method = "spearman")
+
+####
+
+freq_com <- data %>% 
+  dplyr::select(freq = c(RALE3a_1, RMLE3a_1))%>%
+  mutate(freq = coalesce(freq1, freq2))%>%
+  dplyr::select(-freq1, -freq2)%>%
+  mutate(freq = as.numeric(freq))
+
+
+kable(cor(outcome[c(3,19,20)], freq_com$freq, method = "spearman", use = "complete.obs"), col.names = c("Spearman’s r"))
+
+cor.test(as.numeric(length$length),outcome$relationship, method = "spearman")
+
+###
+
+
+kable(cor(outcome[c(3,19,20)], outcome[c(3,19,20)], method = "spearman", use = "complete.obs"))
+
+```
+
